@@ -6,10 +6,10 @@ export class Post {
   id: number;
 
   @Field()
-  created_at: Date;
+  created_at: string;
 
   @Field()
-  updated_at: Date;
+  updated_at: string;
 
   @Field()
   title: string;

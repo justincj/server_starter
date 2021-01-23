@@ -1,15 +1,15 @@
 import { Field, Int, ObjectType } from "type-graphql";
 
 @ObjectType()
-export class Post {
+export class User {
   @Field(() => Int)
   id: number;
 
-  @Field()
-  created_at: Date;
+  @Field(() => String)
+  created_at: string;
 
-  @Field()
-  updated_at: Date;
+  @Field(() => String)
+  updated_at: string;
 
   @Field()
   username: string;

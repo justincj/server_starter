@@ -1,75 +1,126 @@
-import { Post } from "../graphSchema/post";
-import { Arg, Mutation, ObjectType, Query } from "type-graphql";
+import { Arg, Field, InputType, Mutation, ObjectType } from "type-graphql";
 import * as db from "zapatos/db";
 import pool from "../config/pgPool";
 import * as s from "zapatos/schema";
+import { User } from "../graphSchema/user";
+import { userInput } from "./userInput";
+import { validate } from "../utils/validate";
+import argon2 from "argon2";
+
+@ObjectType()
+export class UserResponse {
+  @Field(() => User, { nullable: true })
+  user?: User;
+
+  @Field(() => [FieldError], { nullable: true })
+  error?: FieldError[];
+}
+
+@InputType()
+export class usernameOrEmail {
+  @Field(() => String, { nullable: true })
+  username?: string;
+
+  @Field(() => String, { nullable: true })
+  email?: string;
+}
+
+@ObjectType()
+export class FieldError {
+  @Field()
+  field: string;
+
+  @Field()
+  message: string;
+}
 
 @ObjectType()
 export class UserResolver {
-  @Query(() => [Post])
-  async posts(): Promise<s.post.JSONSelectable[]> {
-    const allPosts = await db.select("post", db.all).run(pool);
-    return allPosts;
-  }
-
-  @Query(() => Post, { nullable: true })
-  async post(@Arg("id") id: number): Promise<s.post.JSONSelectable | null> {
-    const post = await db
-      .selectOne("post", {
-        id,
-      })
-      .run(pool);
-    if (!post) {
-      return null;
+  @Mutation(() => UserResponse)
+  async register(
+    @Arg("userInput") userInput: userInput
+  ): Promise<s.user.JSONSelectable | UserResponse> {
+    const errorResponse = validate(userInput);
+    if (errorResponse) {
+      return {
+        error: errorResponse,
+      };
     }
-    return post;
-  }
 
-  @Mutation(() => Post, { nullable: true })
-  async updatePost(@Arg("id") id: number, @Arg("title") title: string) {
-    const post = await db
-      .selectOne("post", {
-        id,
-      })
-      .run(pool);
-    if (!post || title.length < 3) {
-      return null;
-    }
-    const [updatedPost] = await db.update("post", { title }, { id }).run(pool);
-    return updatedPost;
-  }
-
-  @Mutation(() => Post, { nullable: true })
-  async createPost(
-    @Arg("title") title: string
-  ): Promise<s.post.JSONSelectable | null> {
+    const passwordHash = await argon2.hash(userInput.password);
+    let response;
     try {
-      const post = await db
-        .insert("post", {
-          title,
+      response = await db
+        .insert("user", {
+          username: userInput.username,
+          email: userInput.email,
+          password: passwordHash,
         })
         .run(pool);
-      return post;
+      console.log(response);
     } catch (e) {
-      return null;
+      console.log(e);
+      if (e.code === "23505" && e.detail.includes("username")) {
+        return {
+          error: [{ field: "username", message: "duplicate username" }],
+        };
+      }
+      if (e.code === "23505" && e.detail.includes("email")) {
+        return {
+          error: [
+            {
+              field: "email",
+              message: "duplicate email",
+            },
+          ],
+        };
+      }
     }
+    return {
+      user: response,
+    };
   }
 
-  @Mutation(() => Boolean)
-  async deletePost(@Arg("id") id: number) {
-    // const post = await db.select("post", { id }).run(pool);
-    // if(!post.length){
-    //     return false
-    // }
-    // try {
-    //    const result =  await db.deletes("post", {id}).run(pool);
-    // } catch(e){
+  @Mutation(() => UserResponse)
+  async login(
+    @Arg("usernameOrEmail") usernameOrEmail: usernameOrEmail,
+    @Arg("password") password: string
+  ): Promise<s.user.JSONSelectable | UserResponse> {
+    const [user] = await db
+      .select(
+        "user",
+        usernameOrEmail.username
+          ? {
+              username: usernameOrEmail.username,
+            }
+          : { email: usernameOrEmail.email }
+      )
+      .run(pool);
+    console.log(user);
 
-    // }
-    const result = await db.deletes("post", { id }).run(pool);
-    if (result.length) {
-      return true;
+    if (!user) {
+      return {
+        error: [
+          {
+            field: "usernameOrEmail",
+            message: "username or email does not exists",
+          },
+        ],
+      };
     }
-    return false;
+    const verify = await argon2.verify(user.password, password);
+    if (!verify) {
+      return {
+        error: [
+          {
+            field: "password",
+            message: "incorrect password",
+          },
+        ],
+      };
+    }
+    return {
+      user,
+    };
   }
 }
