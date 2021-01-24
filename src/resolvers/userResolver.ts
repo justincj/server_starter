@@ -1,4 +1,12 @@
-import { Arg, Field, InputType, Mutation, ObjectType } from "type-graphql";
+import {
+  Arg,
+  Ctx,
+  Field,
+  InputType,
+  Mutation,
+  ObjectType,
+  Query,
+} from "type-graphql";
 import * as db from "zapatos/db";
 import pool from "../config/pgPool";
 import * as s from "zapatos/schema";
@@ -6,6 +14,7 @@ import { User } from "../graphSchema/user";
 import { userInput } from "./userInput";
 import { validate } from "../utils/validate";
 import argon2 from "argon2";
+import { MyContext } from "../types";
 
 @ObjectType()
 export class UserResponse {
@@ -36,9 +45,25 @@ export class FieldError {
 
 @ObjectType()
 export class UserResolver {
+  @Query(() => User)
+  async me(@Ctx() { req }: MyContext): Promise<User | null> {
+    if (!req.session.userId) {
+      return null;
+    }
+
+    const [user] = await db
+      .select("user", { id: req.session.userId })
+      .run(pool);
+    if (!user) {
+      return null;
+    }
+    return user;
+  }
+
   @Mutation(() => UserResponse)
   async register(
-    @Arg("userInput") userInput: userInput
+    @Arg("userInput") userInput: userInput,
+    @Ctx() { req }: MyContext
   ): Promise<s.user.JSONSelectable | UserResponse> {
     const errorResponse = validate(userInput);
     if (errorResponse) {
@@ -48,16 +73,16 @@ export class UserResolver {
     }
 
     const passwordHash = await argon2.hash(userInput.password);
-    let response;
+    let user;
     try {
-      response = await db
+      user = await db
         .insert("user", {
           username: userInput.username,
           email: userInput.email,
           password: passwordHash,
         })
         .run(pool);
-      console.log(response);
+      console.log(user);
     } catch (e) {
       console.log(e);
       if (e.code === "23505" && e.detail.includes("username")) {
@@ -75,16 +100,27 @@ export class UserResolver {
           ],
         };
       }
+      return {
+        error: [
+          {
+            field: "username",
+            message: "unknown error",
+          },
+        ],
+      };
     }
+
+    req.session.userId = user.id;
     return {
-      user: response,
+      user: user,
     };
   }
 
   @Mutation(() => UserResponse)
   async login(
     @Arg("usernameOrEmail") usernameOrEmail: usernameOrEmail,
-    @Arg("password") password: string
+    @Arg("password") password: string,
+    @Ctx() { req }: MyContext
   ): Promise<s.user.JSONSelectable | UserResponse> {
     const [user] = await db
       .select(
@@ -119,6 +155,7 @@ export class UserResolver {
         ],
       };
     }
+    req.session.userId = user.id;
     return {
       user,
     };
