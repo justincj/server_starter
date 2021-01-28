@@ -1,4 +1,5 @@
 import "reflect-metadata";
+import cors from "cors";
 import express from "express";
 import { ApolloServer } from "apollo-server-express";
 import { PostResolver } from "./resolvers/postResolver";
@@ -15,6 +16,13 @@ const RedisStore = connectRedis(session);
 
 const main = async () => {
   const app = express();
+
+  app.use(
+    cors({
+      origin: "http://localhost:3000",
+      credentials: true,
+    })
+  );
 
   app.use(
     session({
@@ -43,7 +51,7 @@ const main = async () => {
     context: ({ req, res }) => ({ req, res, redis }),
   });
 
-  apolloServer.applyMiddleware({ app });
+  apolloServer.applyMiddleware({ app, cors: false });
 
   const PORT = 4000;
   app.listen(PORT, () => {

@@ -1,3 +1,4 @@
+import { v4 } from "uuid";
 import {
   Arg,
   Ctx,
@@ -15,6 +16,8 @@ import { userInput } from "./userInput";
 import { validate } from "../utils/validate";
 import argon2 from "argon2";
 import { MyContext } from "../types";
+import { sendMail } from "../utils/sendMail";
+import { FORGOT_PASSWORD } from "../constants";
 
 @ObjectType()
 export class UserResponse {
@@ -45,7 +48,7 @@ export class FieldError {
 
 @ObjectType()
 export class UserResolver {
-  @Query(() => User)
+  @Query(() => User, { nullable: true })
   async me(@Ctx() { req }: MyContext): Promise<User | null> {
     if (!req.session.userId) {
       return null;
@@ -118,18 +121,18 @@ export class UserResolver {
 
   @Mutation(() => UserResponse)
   async login(
-    @Arg("usernameOrEmail") usernameOrEmail: usernameOrEmail,
+    @Arg("usernameOrEmail") usernameOrEmail: string,
     @Arg("password") password: string,
     @Ctx() { req }: MyContext
   ): Promise<s.user.JSONSelectable | UserResponse> {
     const [user] = await db
       .select(
         "user",
-        usernameOrEmail.username
+        !usernameOrEmail.includes("@")
           ? {
-              username: usernameOrEmail.username,
+              username: usernameOrEmail,
             }
-          : { email: usernameOrEmail.email }
+          : { email: usernameOrEmail }
       )
       .run(pool);
     console.log(user);
@@ -159,5 +162,103 @@ export class UserResolver {
     return {
       user,
     };
+  }
+
+  @Mutation(() => Boolean)
+  async forgotPassword(
+    @Arg("usernameOrEmail") usernameOrEmail: string,
+    @Ctx() { redis }: MyContext
+  ): Promise<Boolean> {
+    const token = v4();
+    console.log(token);
+
+    const [user] = await db
+      .select(
+        "user",
+        usernameOrEmail.includes("@")
+          ? { email: usernameOrEmail }
+          : { username: usernameOrEmail }
+      )
+      .run(pool);
+    console.log(user);
+    // check whether that user is valid
+    // if valid send a reset link with a token to reset
+    if (user) {
+      await redis.set(
+        `${FORGOT_PASSWORD}${token}`,
+        user.id,
+        "ex",
+        1000 * 60 * 60 * 3
+      );
+      await sendMail(user.email, "rest link", token);
+    }
+    return true;
+    // token redis.set('forgot_password:{token}`, user.id)
+  }
+  @Mutation(() => UserResponse)
+  async resetpassword(
+    @Arg("token") token: string,
+    @Arg("newPassword") newPassword: string,
+    @Ctx() { req, redis }: MyContext
+  ): Promise<UserResponse> {
+    // token
+    if (newPassword.length < 3) {
+      return {
+        error: [
+          {
+            field: "newPassword",
+            message: "password length must be atleast 3 characters",
+          },
+        ],
+      };
+    }
+    const userid = await redis.get(FORGOT_PASSWORD + token);
+    // check databse to see whether there is user with that name
+    const [user] = await db.select("user", { id: Number(userid) }).run(pool);
+    // password check
+    if (!user) {
+      return {
+        error: [
+          {
+            field: "newPassword",
+            message: "token expired",
+          },
+        ],
+      };
+    }
+    const password = await argon2.hash(newPassword);
+    // change-password new password
+    const updatedUser = await db
+      .update("user", { password }, { id: user.id })
+      .run(pool);
+    if (!updatedUser.length) {
+      return {
+        error: [
+          {
+            field: "newPassword",
+            message: "some error occured",
+          },
+        ],
+      };
+    } else {
+      req.session.userId = user.id;
+      return {
+        user,
+      };
+    }
+    // return user
+    // login
+  }
+
+  @Mutation(() => Boolean)
+  async logout(@Ctx() { req }: MyContext): Promise<Boolean> {
+    return new Promise((resolve) => {
+      req.session.destroy((err) => {
+        if (err) {
+          resolve(false);
+        }
+      });
+      resolve(true);
+    });
   }
 }
